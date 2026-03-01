@@ -1,67 +1,65 @@
 // ============================================
 // Airtable Integration Module
 // ============================================
-// Handles all Airtable operations: querying slots, booking appointments
-//
-// Airtable table schema (existing):
-//   Patient_Name  — singleLineText
-//   Patient_Phone — singleLineText
-//   Doctor        — singleLineText
-//   Date          — date (YYYY-MM-DD)
-//   Time          — singleLineText (HH:MM)
-//   Status        — singleSelect (Confirmed, Cancelled)
-//   Notes         — multilineText
+// Doctor-aware availability, appointment limits, booking with email
 
 const Airtable = require("airtable");
+const config = require("./config");
+const { sendConfirmationEmail } = require("./email");
 
-// Lazy-initialize Airtable (avoids crash if env vars not set yet)
+// Lazy-initialize Airtable
 let _base = null;
 function getBase() {
   if (!_base) {
     const apiKey = (process.env.AIRTABLE_API_KEY || "").trim();
     const baseId = (process.env.AIRTABLE_BASE_ID || "").trim();
     if (!apiKey || !baseId) {
-      throw new Error(
-        "AIRTABLE_API_KEY and AIRTABLE_BASE_ID must be set in environment variables"
-      );
+      throw new Error("AIRTABLE_API_KEY and AIRTABLE_BASE_ID must be set");
     }
     _base = new Airtable({ apiKey }).base(baseId);
   }
   return _base;
 }
 
-const table = () => getBase()((process.env.AIRTABLE_TABLE_NAME || "Appointments").trim());
+const table = () =>
+  getBase()((process.env.AIRTABLE_TABLE_NAME || "Appointments").trim());
 
-// ─── Helper: Generate time slots for a day ───────────────────────
+// ─── Generate time slots ─────────────────────────────────────────
 function generateTimeSlots() {
-  const openHour = parseInt(process.env.CLINIC_OPEN_HOUR || "9", 10);
-  const closeHour = parseInt(process.env.CLINIC_CLOSE_HOUR || "17", 10);
-  const duration = parseInt(process.env.APPOINTMENT_DURATION || "30", 10);
-
+  const { openHour, closeHour, slotDuration } = config.hours;
   const slots = [];
   for (let hour = openHour; hour < closeHour; hour++) {
-    for (let min = 0; min < 60; min += duration) {
-      const hh = String(hour).padStart(2, "0");
-      const mm = String(min).padStart(2, "0");
-      slots.push(`${hh}:${mm}`);
+    for (let min = 0; min < 60; min += slotDuration) {
+      slots.push(
+        `${String(hour).padStart(2, "0")}:${String(min).padStart(2, "0")}`
+      );
     }
   }
   return slots;
 }
 
-// ─── Get all appointments for a specific date ────────────────────
-async function getAppointmentsByDate(date) {
-  // date format: "YYYY-MM-DD"
+// ─── Get day name from date ──────────────────────────────────────
+function getDayName(dateStr) {
+  const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  return days[new Date(dateStr + "T00:00:00").getDay()];
+}
+
+// ─── Get appointments for a date (optionally filtered by doctor) ─
+async function getAppointmentsByDate(date, doctor) {
+  let formula = `IS_SAME({Date}, '${date}', 'day')`;
+  if (doctor) {
+    formula = `AND(${formula}, {Doctor} = '${doctor}')`;
+  }
+
   const records = await table()
-    .select({
-      filterByFormula: `IS_SAME({Date}, '${date}', 'day')`,
-    })
+    .select({ filterByFormula: formula })
     .all();
 
   return records.map((r) => ({
     id: r.id,
     name: r.fields["Patient_Name"],
     phone: r.fields["Patient_Phone"],
+    email: r.fields["Patient_Email"],
     doctor: r.fields["Doctor"],
     date: r.fields["Date"],
     time: r.fields["Time"],
@@ -70,93 +68,151 @@ async function getAppointmentsByDate(date) {
   }));
 }
 
-// ─── Check availability for a specific date and time ─────────────
-async function checkAvailability(date, time) {
-  const appointments = await getAppointmentsByDate(date);
-  const bookedTimes = appointments
-    .filter((a) => a.status !== "Cancelled")
-    .map((a) => a.time);
+// ─── List available doctors ──────────────────────────────────────
+function listDoctors(dateStr) {
+  const dayName = dateStr ? getDayName(dateStr) : null;
 
+  return config.doctors
+    .filter((d) => !dayName || d.availableDays.includes(dayName))
+    .map((d) => ({
+      name: d.name,
+      specialty: d.specialty,
+      availableDays: d.availableDays.join(", "),
+    }));
+}
+
+// ─── Check availability (doctor-aware + limits) ──────────────────
+async function checkAvailability(date, time, doctorName) {
+  const dayName = getDayName(date);
+
+  // Check if clinic is open on this day
+  if (!config.hours.workingDays.includes(dayName)) {
+    return {
+      available: false,
+      message: `Sorry, the clinic is closed on ${dayName}s. We are open ${config.hours.formattedHours}.`,
+    };
+  }
+
+  // If doctor specified, check if they work on this day
+  if (doctorName) {
+    const doctor = config.doctors.find(
+      (d) => d.name.toLowerCase() === doctorName.toLowerCase()
+    );
+    if (doctor && !doctor.availableDays.includes(dayName)) {
+      const availDays = doctor.availableDays.join(", ");
+      return {
+        available: false,
+        message: `Sorry, ${doctor.name} is not available on ${dayName}s. They are available on: ${availDays}.`,
+      };
+    }
+  }
+
+  const appointments = await getAppointmentsByDate(date, doctorName);
+  const activeAppts = appointments.filter((a) => a.status !== "Cancelled");
+  const bookedTimes = activeAppts.map((a) => a.time);
   const allSlots = generateTimeSlots();
 
-  // If a specific time was requested, check that slot
+  // Check per-doctor daily limit
+  if (doctorName) {
+    const doctor = config.doctors.find(
+      (d) => d.name.toLowerCase() === doctorName.toLowerCase()
+    );
+    const maxPerDay = doctor?.maxAppointmentsPerDay || config.limits.maxAppointmentsPerDoctorPerDay;
+    if (activeAppts.length >= maxPerDay) {
+      return {
+        available: false,
+        message: `Sorry, ${doctorName} is fully booked on ${date}. They have reached their maximum of ${maxPerDay} appointments for the day.`,
+      };
+    }
+  }
+
   if (time) {
     const isAvailable = !bookedTimes.includes(time);
     if (isAvailable) {
       return {
-        available: true,
-        date,
-        time,
-        message: `The slot on ${date} at ${time} is available.`,
+        available: true, date, time, doctor: doctorName,
+        message: `The slot on ${date} at ${time}${doctorName ? ` with ${doctorName}` : ""} is available.`,
       };
     }
-    // Find next available slot on the same day
     const nextAvailable = allSlots.find(
       (slot) => slot > time && !bookedTimes.includes(slot)
     );
     return {
-      available: false,
-      date,
-      requestedTime: time,
+      available: false, date, requestedTime: time,
       nextAvailable: nextAvailable || null,
       message: nextAvailable
-        ? `Sorry, ${time} is taken. The next available slot is at ${nextAvailable}.`
-        : `Sorry, no more slots available on ${date} after ${time}.`,
+        ? `Sorry, ${time} is taken${doctorName ? ` for ${doctorName}` : ""}. The next available slot is at ${nextAvailable}.`
+        : `Sorry, no more slots available on ${date}${doctorName ? ` with ${doctorName}` : ""} after ${time}.`,
     };
   }
 
-  // No specific time — return all available slots
-  const availableSlots = allSlots.filter(
-    (slot) => !bookedTimes.includes(slot)
-  );
+  const availableSlots = allSlots.filter((s) => !bookedTimes.includes(s));
   return {
     available: availableSlots.length > 0,
     date,
+    doctor: doctorName,
     availableSlots,
     message:
       availableSlots.length > 0
-        ? `Available slots on ${date}: ${availableSlots.join(", ")}`
-        : `Sorry, no slots available on ${date}.`,
+        ? `Available slots on ${date}${doctorName ? ` with ${doctorName}` : ""}: ${availableSlots.join(", ")}`
+        : `Sorry, no slots available on ${date}${doctorName ? ` with ${doctorName}` : ""}.`,
   };
 }
 
-// ─── Book an appointment ─────────────────────────────────────────
-async function bookAppointment({ name, phone, date, time, reason, doctor }) {
-  // Double-check availability before booking
-  const availability = await checkAvailability(date, time);
+// ─── Book appointment (with email confirmation) ──────────────────
+async function bookAppointment({ name, phone, email, date, time, reason, doctor }) {
+  // Double-check availability
+  const availability = await checkAvailability(date, time, doctor);
   if (!availability.available) {
-    return {
-      success: false,
-      message: availability.message,
-    };
+    return { success: false, message: availability.message };
   }
 
-  // Create record in Airtable (matches existing schema)
-  const record = await table().create([
-    {
-      fields: {
-        "Patient_Name": name,
-        "Patient_Phone": phone || "Not provided",
-        "Doctor": doctor || "General",
-        "Date": date,           // YYYY-MM-DD format for date field
-        "Time": time,
-        "Status": "Confirmed",
-        "Notes": `Reason: ${reason || "General visit"}\nBooked via: Retell AI Call\nBooked at: ${new Date().toISOString()}`,
-      },
-    },
-  ]);
+  // Create record in Airtable
+  const fields = {
+    Patient_Name: name,
+    Patient_Phone: phone || "Not provided",
+    Doctor: doctor || "General",
+    Date: date,
+    Time: time,
+    Status: "Confirmed",
+    Notes: `Reason: ${reason || "General visit"}\nEmail: ${email || "Not provided"}\nBooked via: Retell AI Call\nBooked at: ${new Date().toISOString()}`,
+  };
+
+  // Add email field if it exists in the table
+  if (email) {
+    fields["Patient_Email"] = email;
+  }
+
+  const record = await table().create([{ fields }]);
+
+  // Send email confirmation (non-blocking)
+  let emailResult = { sent: false };
+  if (email) {
+    emailResult = await sendConfirmationEmail({
+      patientEmail: email,
+      patientName: name,
+      doctor,
+      date,
+      time,
+      reason,
+    }).catch((err) => {
+      console.error("[Booking] Email failed:", err);
+      return { sent: false };
+    });
+  }
+
+  const doctorMsg = doctor ? ` with ${doctor}` : "";
+  const emailMsg = emailResult.sent
+    ? " A confirmation email has been sent."
+    : email
+      ? " We were unable to send a confirmation email, but your appointment is confirmed."
+      : "";
 
   return {
     success: true,
     appointmentId: record[0].id,
-    message: `Appointment booked successfully for ${name} on ${date} at ${time}.`,
-    details: {
-      name,
-      phone,
-      date,
-      time,
-      reason,
-    },
+    message: `Appointment booked successfully for ${name} on ${date} at ${time}${doctorMsg}.${emailMsg}`,
+    details: { name, phone, email, date, time, reason, doctor },
   };
 }
 
@@ -164,5 +220,7 @@ module.exports = {
   getAppointmentsByDate,
   checkAvailability,
   bookAppointment,
+  listDoctors,
   generateTimeSlots,
+  getDayName,
 };

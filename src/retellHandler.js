@@ -1,25 +1,63 @@
 // ============================================
 // Retell AI Handler Module
 // ============================================
-// Processes Retell AI custom function calls and webhook events
+// Handles custom function calls and webhook events
 
-const { checkAvailability, bookAppointment } = require("./airtable");
+const { checkAvailability, bookAppointment, listDoctors } = require("./airtable");
+const config = require("./config");
 
 // ─── Handle Custom Function Calls from Retell AI ─────────────────
-// Retell AI sends: { name, args, call } — NOT function_name!
 async function handleCustomFunction(req, res) {
-    // Retell sends "name", but we also support "function_name" for manual testing
+    // Retell sends "name" field, manual testing may use "function_name"
     const function_name = req.body.name || req.body.function_name;
     const args = req.body.args || {};
 
-    console.log(`[Retell] Raw body keys:`, Object.keys(req.body));
-    console.log(`[Retell] Custom function called: ${function_name}`, JSON.stringify(args));
+    console.log(`[Retell] Function: ${function_name}`, JSON.stringify(args));
 
     try {
         switch (function_name) {
-            // ── Check Availability ──────────────────────────────────
+            // ── List Available Doctors ─────────────────────────────
+            case "list_doctors": {
+                const { date } = args;
+                const doctors = listDoctors(date);
+
+                if (doctors.length === 0) {
+                    return res.json({
+                        result: `No doctors are available on that day. Our working days are ${config.hours.formattedHours}.`,
+                    });
+                }
+
+                const doctorList = doctors
+                    .map((d) => `${d.name} — ${d.specialty}`)
+                    .join(". ");
+
+                return res.json({
+                    result: `Our available doctors${date ? " on that day" : ""} are: ${doctorList}. Which doctor would you prefer?`,
+                });
+            }
+
+            // ── Get Clinic Info ────────────────────────────────────
+            case "get_clinic_info": {
+                const { question } = args;
+                const info = {
+                    name: config.clinic.name,
+                    address: config.clinic.address,
+                    phone: config.clinic.phone,
+                    hours: config.hours.formattedHours,
+                    services: config.services.join(", "),
+                    doctors: config.doctors
+                        .map((d) => `${d.name} (${d.specialty})`)
+                        .join(", "),
+                };
+
+                return res.json({
+                    result: `Here is our clinic information: ${config.clinic.name} is located at ${config.clinic.address}. Our phone number is ${config.clinic.phone}. We are open ${config.hours.formattedHours}. Our services include: ${config.services.slice(0, 5).join(", ")}, and more. Our doctors are: ${info.doctors}.`,
+                });
+            }
+
+            // ── Check Availability ─────────────────────────────────
             case "check_availability": {
-                const { date, time } = args;
+                const { date, time, doctor } = args;
 
                 if (!date) {
                     return res.json({
@@ -27,43 +65,45 @@ async function handleCustomFunction(req, res) {
                     });
                 }
 
-                const result = await checkAvailability(date, time);
-                console.log(`[Retell] Availability result:`, result);
+                const result = await checkAvailability(date, time, doctor);
+                console.log(`[Retell] Availability:`, result.message);
                 return res.json({ result: result.message });
             }
 
-            // ── Book Appointment ────────────────────────────────────
+            // ── Book Appointment ───────────────────────────────────
             case "book_appointment": {
-                const { patient_name, phone, date, time, reason } = args;
+                const { patient_name, phone, email, date, time, reason, doctor } = args;
 
                 if (!patient_name || !date || !time) {
                     return res.json({
                         result:
-                            "I need the patient name, date, and time to book an appointment.",
+                            "I need the patient's name, date, and time to book an appointment. Could you please provide those details?",
                     });
                 }
 
                 const result = await bookAppointment({
                     name: patient_name,
                     phone: phone || "Not provided",
+                    email: email || null,
                     date,
                     time,
                     reason: reason || "General visit",
+                    doctor: doctor || null,
                 });
 
-                console.log(`[Retell] Booking result:`, result);
+                console.log(`[Retell] Booking:`, result.message);
                 return res.json({ result: result.message });
             }
 
-            // ── Unknown Function ────────────────────────────────────
+            // ── Unknown Function ───────────────────────────────────
             default:
                 console.warn(`[Retell] Unknown function: ${function_name}`);
                 return res.json({
-                    result: `Unknown function: ${function_name}`,
+                    result: `I'm sorry, I couldn't process that request. Could you please try again?`,
                 });
         }
     } catch (error) {
-        console.error(`[Retell] Error handling function ${function_name}:`, error);
+        console.error(`[Retell] Error in ${function_name}:`, error);
         return res.json({
             result:
                 "I'm sorry, there was a technical issue. Please try again or call back later.",
@@ -71,39 +111,11 @@ async function handleCustomFunction(req, res) {
     }
 }
 
-// ─── Handle Webhook Events from Retell AI ────────────────────────
-// These fire for call lifecycle events (optional, for logging/analytics)
+// ─── Handle Webhook Events ───────────────────────────────────────
 function handleWebhookEvent(req, res) {
     const { event, call } = req.body;
-
-    console.log(`[Retell Webhook] Event: ${event}`);
-
-    switch (event) {
-        case "call_started":
-            console.log(`[Retell] Call started — ID: ${call?.call_id}`);
-            break;
-
-        case "call_ended":
-            console.log(
-                `[Retell] Call ended — ID: ${call?.call_id}, Duration: ${call?.duration_ms}ms`
-            );
-            break;
-
-        case "call_analyzed":
-            console.log(
-                `[Retell] Call analyzed — Summary: ${call?.call_analysis?.call_summary}`
-            );
-            break;
-
-        default:
-            console.log(`[Retell] Unhandled event: ${event}`);
-    }
-
-    // Always respond 200 to acknowledge the webhook
+    console.log(`[Webhook] ${event} — Call: ${call?.call_id || "unknown"}`);
     return res.status(200).json({ received: true });
 }
 
-module.exports = {
-    handleCustomFunction,
-    handleWebhookEvent,
-};
+module.exports = { handleCustomFunction, handleWebhookEvent };
