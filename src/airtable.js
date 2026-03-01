@@ -159,7 +159,7 @@ async function checkAvailability(date, time, doctorName) {
   };
 }
 
-// ─── Book appointment (with email + WhatsApp confirmation) ───────
+// ─── Book appointment (with email + WhatsApp to customer) ────────
 async function bookAppointment({ name, phone, email, date, time, reason, doctor }) {
   // Double-check availability
   const availability = await checkAvailability(date, time, doctor);
@@ -167,7 +167,7 @@ async function bookAppointment({ name, phone, email, date, time, reason, doctor 
     return { success: false, message: availability.message };
   }
 
-  // Create record in Airtable
+  // Create record in Airtable (try with email field, fallback without)
   const fields = {
     Patient_Name: name,
     Patient_Phone: phone || "Not provided",
@@ -178,9 +178,23 @@ async function bookAppointment({ name, phone, email, date, time, reason, doctor 
     Notes: `Reason: ${reason || "General visit"}\nEmail: ${email || "Not provided"}\nBooked via: Retell AI Call\nBooked at: ${new Date().toISOString()}`,
   };
 
-  const record = await table().create([{ fields }]);
+  let record;
+  try {
+    // Try with Patient_Email field first
+    if (email) fields["Patient_Email"] = email;
+    record = await table().create([{ fields }]);
+  } catch (err) {
+    // If Patient_Email field doesn't exist, try without it
+    if (err.message && err.message.includes("Patient_Email")) {
+      console.log("[Booking] Patient_Email field not in table, storing email in Notes only");
+      delete fields["Patient_Email"];
+      record = await table().create([{ fields }]);
+    } else {
+      throw err;
+    }
+  }
 
-  // Send email confirmation (non-blocking)
+  // Send email confirmation to CUSTOMER
   let emailResult = { sent: false };
   if (email) {
     emailResult = await sendConfirmationEmail({
@@ -191,21 +205,19 @@ async function bookAppointment({ name, phone, email, date, time, reason, doctor 
       time,
       reason,
     }).catch((err) => {
-      console.error("[Booking] Email failed:", err);
+      console.error("[Booking] Email to customer failed:", err);
       return { sent: false };
     });
   }
 
-  // Send WhatsApp notification to clinic (non-blocking)
+  // Send WhatsApp notification to clinic owner + customer
   const { sendWhatsAppConfirmation } = require("./whatsapp");
   sendWhatsAppConfirmation({ phone, patientName: name, doctor, date, time, reason }).catch((err) => {
     console.error("[Booking] WhatsApp failed:", err);
   });
 
   const doctorMsg = doctor ? ` with ${doctor}` : "";
-  const emailMsg = emailResult.sent
-    ? " A confirmation email has been sent."
-    : "";
+  const emailMsg = emailResult.sent ? " A confirmation email has been sent to your email address." : "";
 
   return {
     success: true,
