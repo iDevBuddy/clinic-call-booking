@@ -159,7 +159,7 @@ async function checkAvailability(date, time, doctorName) {
   };
 }
 
-// ─── Book appointment (with email confirmation) ──────────────────
+// ─── Book appointment (with email + WhatsApp confirmation) ───────
 async function bookAppointment({ name, phone, email, date, time, reason, doctor }) {
   // Double-check availability
   const availability = await checkAvailability(date, time, doctor);
@@ -177,8 +177,6 @@ async function bookAppointment({ name, phone, email, date, time, reason, doctor 
     Status: "Confirmed",
     Notes: `Reason: ${reason || "General visit"}\nEmail: ${email || "Not provided"}\nBooked via: Retell AI Call\nBooked at: ${new Date().toISOString()}`,
   };
-
-  // Email is stored in the Notes field above
 
   const record = await table().create([{ fields }]);
 
@@ -198,12 +196,16 @@ async function bookAppointment({ name, phone, email, date, time, reason, doctor 
     });
   }
 
+  // Send WhatsApp notification to clinic (non-blocking)
+  const { sendWhatsAppConfirmation } = require("./whatsapp");
+  sendWhatsAppConfirmation({ phone, patientName: name, doctor, date, time, reason }).catch((err) => {
+    console.error("[Booking] WhatsApp failed:", err);
+  });
+
   const doctorMsg = doctor ? ` with ${doctor}` : "";
   const emailMsg = emailResult.sent
     ? " A confirmation email has been sent."
-    : email
-      ? " We were unable to send a confirmation email, but your appointment is confirmed."
-      : "";
+    : "";
 
   return {
     success: true,
