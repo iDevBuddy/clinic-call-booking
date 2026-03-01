@@ -1,47 +1,75 @@
 // ============================================
-// WhatsApp Notification Module
+// WhatsApp Confirmation Module (Green API)
 // ============================================
-// Sends WhatsApp booking confirmations via CallMeBot (free)
+// Sends WhatsApp booking confirmations to customers via Green API
+// Free: 720 messages/month — sends to ANY WhatsApp number
 //
-// Setup: The recipient must first register with CallMeBot:
-//   1. Add +34 644 714 572 to WhatsApp contacts
-//   2. Send "I allow callmebot to send me messages" to that number
-//   3. You'll receive an API key — set it as CALLMEBOT_API_KEY in env
+// Setup:
+//   1. Sign up at green-api.com (free)
+//   2. Create instance → scan QR with your WhatsApp
+//   3. Set env vars: GREEN_API_INSTANCE_ID, GREEN_API_TOKEN
 
-async function sendWhatsAppConfirmation({ phone, patientName, doctor, date, time, reason }) {
-    const apiKey = (process.env.CALLMEBOT_API_KEY || "").trim();
-    const clinicPhone = (process.env.CALLMEBOT_PHONE || "").trim();
+const config = require("./config");
 
-    if (!apiKey || !clinicPhone) {
-        console.log("[WhatsApp] CALLMEBOT_API_KEY or CALLMEBOT_PHONE not set — skipping");
+function getGreenApiConfig() {
+    const instanceId = (process.env.GREEN_API_INSTANCE_ID || "").trim();
+    const token = (process.env.GREEN_API_TOKEN || "").trim();
+    if (!instanceId || !token) return null;
+    return { instanceId, token };
+}
+
+// Format phone number for Green API (needs: 923001234567@c.us)
+function formatPhone(phone) {
+    // Remove +, spaces, dashes
+    let clean = phone.replace(/[\s\-\+\(\)]/g, "");
+    // If starts with 0, assume Pakistan (+92)
+    if (clean.startsWith("0")) clean = "92" + clean.slice(1);
+    return clean + "@c.us";
+}
+
+// ─── Send WhatsApp confirmation to CUSTOMER ──────────────────────
+async function sendCustomerWhatsApp({ phone, patientName, doctor, date, time, reason }) {
+    const api = getGreenApiConfig();
+    if (!api) {
+        console.log("[WhatsApp] Green API not configured — skipping");
         return { sent: false, reason: "Not configured" };
     }
 
-    const config = require("./config");
+    if (!phone || phone === "Not provided") {
+        console.log("[WhatsApp] No phone number — skipping");
+        return { sent: false, reason: "No phone" };
+    }
 
-    // Message to clinic owner (booking notification)
-    const clinicMsg = encodeURIComponent(
-        `📋 *New Appointment Booked*\n\n` +
-        `👤 Patient: ${patientName}\n` +
-        `📞 Phone: ${phone || "Not provided"}\n` +
-        `👨‍⚕️ Doctor: ${doctor || "General"}\n` +
-        `📅 Date: ${date}\n` +
-        `⏰ Time: ${time}\n` +
-        `📝 Reason: ${reason || "General visit"}\n\n` +
-        `— ${config.clinic.name}`
-    );
+    const message =
+        `✅ *Appointment Confirmed*\n\n` +
+        `Hello ${patientName}! Your appointment has been booked:\n\n` +
+        `👨‍⚕️ *Doctor:* ${doctor || "General"}\n` +
+        `📅 *Date:* ${date}\n` +
+        `⏰ *Time:* ${time}\n` +
+        `📝 *Reason:* ${reason || "General visit"}\n\n` +
+        `📍 *Location:* ${config.clinic.address}\n` +
+        `📞 *Phone:* ${config.clinic.phone}\n\n` +
+        `To reschedule or cancel, please call us at least 24 hours before your appointment.\n\n` +
+        `— ${config.clinic.name} 🦷`;
 
     try {
-        const url = `https://api.callmebot.com/whatsapp.php?phone=${clinicPhone}&text=${clinicMsg}&apikey=${apiKey}`;
-        const res = await fetch(url);
-        const text = await res.text();
+        const url = `https://api.green-api.com/waInstance${api.instanceId}/sendMessage/${api.token}`;
+        const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                chatId: formatPhone(phone),
+                message,
+            }),
+        });
+        const data = await res.json();
 
-        if (res.ok && text.includes("Message queued")) {
-            console.log(`[WhatsApp] ✅ Notification sent to clinic (${clinicPhone})`);
-            return { sent: true };
+        if (data.idMessage) {
+            console.log(`[WhatsApp] ✅ Confirmation sent to customer ${phone} — ID: ${data.idMessage}`);
+            return { sent: true, messageId: data.idMessage };
         } else {
-            console.error(`[WhatsApp] ❌ Failed:`, text);
-            return { sent: false, error: text };
+            console.error(`[WhatsApp] ❌ Failed:`, JSON.stringify(data));
+            return { sent: false, error: data };
         }
     } catch (err) {
         console.error(`[WhatsApp] ❌ Error:`, err.message);
@@ -49,32 +77,36 @@ async function sendWhatsAppConfirmation({ phone, patientName, doctor, date, time
     }
 }
 
-// Send confirmation to patient's WhatsApp (patient must be registered with CallMeBot)
-async function sendPatientWhatsApp({ patientPhone, patientApiKey, patientName, doctor, date, time }) {
-    if (!patientApiKey || !patientPhone) return { sent: false };
+// ─── Send WhatsApp notification to CLINIC OWNER ──────────────────
+async function sendClinicNotification({ phone, patientName, doctor, date, time, reason }) {
+    const api = getGreenApiConfig();
+    const clinicPhone = (process.env.CLINIC_OWNER_PHONE || "").trim();
+    if (!api || !clinicPhone) return { sent: false };
 
-    const config = require("./config");
-    const msg = encodeURIComponent(
-        `✅ *Appointment Confirmed*\n\n` +
-        `Hi ${patientName}! Your appointment is booked:\n\n` +
-        `👨‍⚕️ Doctor: ${doctor || "General"}\n` +
-        `📅 Date: ${date}\n` +
-        `⏰ Time: ${time}\n` +
-        `📍 Location: ${config.clinic.address}\n` +
-        `📞 Clinic: ${config.clinic.phone}\n\n` +
-        `If you need to reschedule, please call us.\n` +
-        `— ${config.clinic.name}`
-    );
+    const message =
+        `📋 *New Appointment Booked*\n\n` +
+        `👤 *Patient:* ${patientName}\n` +
+        `📞 *Phone:* ${phone || "Not provided"}\n` +
+        `👨‍⚕️ *Doctor:* ${doctor || "General"}\n` +
+        `📅 *Date:* ${date}\n` +
+        `⏰ *Time:* ${time}\n` +
+        `📝 *Reason:* ${reason || "General visit"}\n\n` +
+        `— ${config.clinic.name}`;
 
     try {
-        const url = `https://api.callmebot.com/whatsapp.php?phone=${patientPhone}&text=${msg}&apikey=${patientApiKey}`;
-        const res = await fetch(url);
-        const text = await res.text();
-        console.log(`[WhatsApp] Patient message:`, text.includes("queued") ? "✅ Sent" : "❌ Failed");
-        return { sent: text.includes("queued") };
+        const url = `https://api.green-api.com/waInstance${api.instanceId}/sendMessage/${api.token}`;
+        const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chatId: formatPhone(clinicPhone), message }),
+        });
+        const data = await res.json();
+        console.log(`[WhatsApp] Clinic notification:`, data.idMessage ? "✅ Sent" : "❌ Failed");
+        return { sent: !!data.idMessage };
     } catch (err) {
-        return { sent: false, error: err.message };
+        console.error(`[WhatsApp] Clinic notification error:`, err.message);
+        return { sent: false };
     }
 }
 
-module.exports = { sendWhatsAppConfirmation, sendPatientWhatsApp };
+module.exports = { sendCustomerWhatsApp, sendClinicNotification };

@@ -210,19 +210,26 @@ async function bookAppointment({ name, phone, email, date, time, reason, doctor 
     });
   }
 
-  // Send WhatsApp notification to clinic owner + customer
-  const { sendWhatsAppConfirmation } = require("./whatsapp");
-  sendWhatsAppConfirmation({ phone, patientName: name, doctor, date, time, reason }).catch((err) => {
-    console.error("[Booking] WhatsApp failed:", err);
-  });
+  // Send WhatsApp confirmation to CUSTOMER + notification to clinic owner
+  const { sendCustomerWhatsApp, sendClinicNotification } = require("./whatsapp");
+  let whatsappResult = { sent: false };
+  if (phone && phone !== "Not provided") {
+    whatsappResult = await sendCustomerWhatsApp({ phone, patientName: name, doctor, date, time, reason }).catch((err) => {
+      console.error("[Booking] WhatsApp to customer failed:", err);
+      return { sent: false };
+    });
+  }
+  // Also notify clinic owner (non-blocking)
+  sendClinicNotification({ phone, patientName: name, doctor, date, time, reason }).catch(() => { });
 
   const doctorMsg = doctor ? ` with ${doctor}` : "";
   const emailMsg = emailResult.sent ? " A confirmation email has been sent to your email address." : "";
+  const whatsappMsg = whatsappResult.sent ? " A WhatsApp confirmation has also been sent." : "";
 
   return {
     success: true,
     appointmentId: record[0].id,
-    message: `Appointment booked successfully for ${name} on ${date} at ${time}${doctorMsg}.${emailMsg}`,
+    message: `Appointment booked successfully for ${name} on ${date} at ${time}${doctorMsg}.${emailMsg}${whatsappMsg}`,
     details: { name, phone, email, date, time, reason, doctor },
   };
 }
