@@ -6,11 +6,14 @@
 const { checkAvailability, bookAppointment } = require("./airtable");
 
 // ─── Handle Custom Function Calls from Retell AI ─────────────────
-// Retell AI sends POST requests when the agent triggers a custom function
+// Retell AI sends: { name, args, call } — NOT function_name!
 async function handleCustomFunction(req, res) {
-    const { function_name, args } = req.body;
+    // Retell sends "name", but we also support "function_name" for manual testing
+    const function_name = req.body.name || req.body.function_name;
+    const args = req.body.args || {};
 
-    console.log(`[Retell] Custom function called: ${function_name}`, args);
+    console.log(`[Retell] Raw body keys:`, Object.keys(req.body));
+    console.log(`[Retell] Custom function called: ${function_name}`, JSON.stringify(args));
 
     try {
         switch (function_name) {
