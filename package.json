@@ -1,0 +1,20 @@
+{
+  "name": "clinic-call-booking",
+  "version": "1.0.0",
+  "description": "Automated clinic call handling with Retell AI + Airtable appointment booking",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "airtable": "^0.12.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "retell-sdk": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

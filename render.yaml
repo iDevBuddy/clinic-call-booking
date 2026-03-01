@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: clinic-call-booking
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: RETELL_API_KEY
+        sync: false
+      - key: AIRTABLE_API_KEY
+        sync: false
+      - key: AIRTABLE_BASE_ID
+        sync: false
+      - key: AIRTABLE_TABLE_NAME
+        value: Appointments
+      - key: CLINIC_OPEN_HOUR
+        value: "9"
+      - key: CLINIC_CLOSE_HOUR
+        value: "17"
+      - key: APPOINTMENT_DURATION
+        value: "30"
+      - key: CLINIC_NAME
+        value: My Dental Clinic
