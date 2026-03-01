@@ -178,10 +178,7 @@ async function bookAppointment({ name, phone, email, date, time, reason, doctor 
     Notes: `Reason: ${reason || "General visit"}\nEmail: ${email || "Not provided"}\nBooked via: Retell AI Call\nBooked at: ${new Date().toISOString()}`,
   };
 
-  // Add email field if it exists in the table
-  if (email) {
-    fields["Patient_Email"] = email;
-  }
+  // Email is stored in the Notes field above
 
   const record = await table().create([{ fields }]);
 
