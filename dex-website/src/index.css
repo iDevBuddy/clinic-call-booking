@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    * {
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+    }
+
+    html {
+        scroll-behavior: smooth;
+    }
+
+    ::selection {
+        background: rgba(224, 81, 50, 0.3);
+        color: #fff;
+    }
+}
+
+@layer components {
+    .section-padding {
+        @apply py-20 lg:py-28;
+    }
+}
+
+@keyframes listening-ring-anim {
+    0% { transform: scale(1); opacity: 0.6; }
+    100% { transform: scale(2.2); opacity: 0; }
+}
+@keyframes bounce-dot-anim {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-10px); }
+}
+@keyframes equalizer-anim {
+    0%, 100% { height: 8px; }
+    50% { height: 32px; }
+}
+@keyframes email-slide-up-anim {
+    from { transform: translateY(12px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+.listening-ring {
+    position: absolute;
+    inset: 0;
+    border-radius: 9999px;
+    border: 2px solid #e05132;
+    animation: listening-ring-anim 1.5s ease-out infinite;
+}
+.bounce-dot {
+    animation: bounce-dot-anim 0.8s ease-in-out infinite;
+}
+.equalizer-bar {
+    animation: equalizer-anim 0.8s ease-in-out infinite;
+}
+.email-slide-up {
+    animation: email-slide-up-anim 0.25s ease-out forwards;
+}
+
+@keyframes trigger-wave-anim {
+    0%, 100% { height: 3px; }
+    50% { height: 9px; }
+}
+.trigger-wave-bar {
+    animation: trigger-wave-anim 0.7s ease-in-out infinite;
+}
