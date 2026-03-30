@@ -44,6 +44,32 @@ app.post("/retell/functions", handleCustomFunction);
 // Configure this under "Webhooks" in your Retell AI agent settings
 app.post("/retell/webhook", handleWebhookEvent);
 
+// Create web call for browser-based voice demo
+app.post("/retell/create-web-call", async (req, res) => {
+    const RETELL_API_KEY = (process.env.RETELL_API_KEY || "").trim();
+    const { agent_id } = req.body;
+
+    if (!agent_id) {
+        return res.status(400).json({ error: "agent_id is required" });
+    }
+
+    try {
+        const response = await fetch("https://api.retellai.com/v2/create-web-call", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${RETELL_API_KEY}`,
+            },
+            body: JSON.stringify({ agent_id }),
+        });
+        const data = await response.json();
+        return res.json(data);
+    } catch (error) {
+        console.error("[WebCall] Error:", error);
+        return res.status(500).json({ error: "Failed to create web call" });
+    }
+});
+
 // ─── Direct API endpoints (for testing without Retell) ───────────
 
 // Check availability — GET /api/availability?date=2025-03-01&time=10:00

@@ -74,10 +74,10 @@ async function handleCustomFunction(req, res) {
             case "book_appointment": {
                 const { patient_name, phone, email, date, time, reason, doctor } = args;
 
-                if (!patient_name || !date || !time) {
+                if (!patient_name || !date || !time || !phone || !email) {
                     return res.json({
                         result:
-                            "I need the patient's name, date, and time to book an appointment. Could you please provide those details?",
+                            "I need the patient's name, phone number, email, date, and time to book an appointment. Could you please provide those details?",
                     });
                 }
 

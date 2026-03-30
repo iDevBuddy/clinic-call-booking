@@ -184,13 +184,21 @@ async function bookAppointment({ name, phone, email, date, time, reason, doctor 
     if (email) fields["Patient_Email"] = email;
     record = await table().create([{ fields }]);
   } catch (err) {
-    // If Patient_Email field doesn't exist, try without it
-    if (err.message && err.message.includes("Patient_Email")) {
-      console.log("[Booking] Patient_Email field not in table, storing email in Notes only");
-      delete fields["Patient_Email"];
-      record = await table().create([{ fields }]);
-    } else {
-      throw err;
+    console.error("[Booking] First Airtable creation failed:", err.message);
+    // If the schema is different (e.g. missing Patient_Email or Patient_Phone), 
+    // fallback to a minimal payload and store everything else in Notes.
+    const fallbackFields = {
+      Patient_Name: name,
+      Date: date,
+      Time: time,
+      Notes: `Phone: ${phone || "Not provided"}\nEmail: ${email || "Not provided"}\nDoctor: ${doctor || "General"}\nReason: ${reason || "General visit"}\nStatus: Confirmed\n[Airtable Auto-Fallback Booked at: ${new Date().toISOString()}]`
+    };
+    try {
+      record = await table().create([{ fields: fallbackFields }]);
+      console.log("[Booking] Succeeded with minimal fallback fields.");
+    } catch (fallbackErr) {
+      console.error("[Booking] Even fallback creation failed:", fallbackErr.message);
+      throw fallbackErr;
     }
   }
 
